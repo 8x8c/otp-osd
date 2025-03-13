@@ -19,4 +19,4 @@ With this app tho, you do not have to change the 32 byte key file (key.key) beca
 
 # Is This Approach Truly "One Step Down" from OTP?
 
-Short answer: Yes. Using a stream cipher (like ChaCha20) to XOR files with a per-file keystream generated from a shorter, persistent master key and a new nonce each time is a well-known and widely used practice. It is commonly seen as the "best practical alternative" (or “one step down”) from a true one-time pad. 
+Short answer: Yes. Using a stream cipher (like ChaCha20) to XOR files with a per-file keystream generated from a shorter, persistent master key and a new nonce each time is a well-known and widely used practice. It is commonly seen as the "best practical alternative" (or “one step down”) from a true one-time pad. It generates a full length key equal to the size of the file that you are encrypting- and then it is xored byte for byte. Each time you ENCRYPT, a unuque full length key is made, and when you decrypt, the key is gone forever. (because of the nonce that is injected into the cyphertext). 

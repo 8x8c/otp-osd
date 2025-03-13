@@ -1,0 +1,10 @@
+[package]
+name = "otp-osd"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+chacha20 = "0.9"
+cipher = "0.4"
+rand = "0.8"
+

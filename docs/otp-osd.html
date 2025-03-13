@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>otp-osd: A "One-Time Pad One Step Down" XOR-Based File Encryptor</title>
+<style>
+  body {
+    font-family: Arial, sans-serif;
+    margin: 2em;
+    line-height: 1.6;
+    background-color: #fefefe;
+    color: #333;
+  }
+  code {
+    background-color: #f4f4f4;
+    padding: 0.2em 0.3em;
+    border-radius: 3px;
+    font-family: "Courier New", Courier, monospace;
+  }
+  pre {
+    background-color: #f4f4f4;
+    padding: 1em;
+    border-radius: 5px;
+    overflow: auto;
+  }
+  h1 {
+    margin-bottom: 0.5em;
+  }
+  h2, h3 {
+    color: #444;
+    margin-top: 2em;
+    margin-bottom: 0.5em;
+  }
+  .section {
+    margin-top: 1.5em;
+  }
+</style>
+</head>
+<body>
+
+<h1>otp-osd: A "One-Time Pad One Step Down" File Encryptor</h1>
+<p>
+  <strong>otp-osd</strong> is a small command-line tool that encrypts/decrypts files 
+  using a <em>stream-cipher-based</em> approach, which conceptually mimics a one-time pad (OTP)
+  <em>but</em> avoids the impractical requirement of gigantic keys. Instead, it uses a 
+  32-byte <strong>master key</strong> in combination with a random <strong>nonce</strong> for each file. 
+  This approach is considered &ldquo;one step down&rdquo; from a perfect OTP in terms of 
+  mathematical security, yet is still extremely strong <em>computationally</em> under modern cryptography.
+</p>
+
+<hr>
+
+<h2>1. Overview</h2>
+<div class="section">
+  <p>
+    A true <em>one-time pad</em> requires a key that is as large as the entire message 
+    and used exactly once, providing <strong>information-theoretic security</strong>. 
+    However, distributing and storing a massive key is often impractical.
+  </p>
+  <p>
+    <strong>otp-osd</strong> takes the same 
+    <code>XOR(plaintext, key)</code> approach but generates a &ldquo;pad&rdquo; on the fly 
+    using a secure <em>stream cipher</em> (ChaCha20) with a 32-byte master key plus a 
+    random nonce. This means:
+  </p>
+  <ul>
+    <li>We only need to store or secure one 32-byte master key file (<code>key.key</code>).</li>
+    <li>A random 12-byte <em>nonce</em> is generated for each encryption, ensuring 
+        the key stream never repeats (unless the nonce is reused accidentally).</li>
+    <li>We prepend the nonce to the resulting ciphertext so that decryption can 
+        automatically reconstruct the same key stream.</li>
+  </ul>
+  <p>
+    This method is &ldquo;one step down&rdquo; because it provides 
+    <strong>computational security</strong> rather than information-theoretic security. 
+    But under standard assumptions (that ChaCha20 is secure), 
+    <strong>otp-osd</strong> is effectively unbreakable in practice.
+  </p>
+</div>
+
+<h2>2. Requirements</h2>
+<div class="section">
+  <p>
+    <strong>otp-osd</strong> is written in Rust. You will need:
+  </p>
+  <ul>
+    <li>Rust and Cargo (1.60+ recommended)</li>
+    <li>A C compiler toolchain (depending on your platform, e.g. <code>build-essential</code> on Linux)</li>
+    <li>The following crates in <code>Cargo.toml</code>:
+      <ul>
+        <li><code>chacha20 = "0.9"</code></li>
+        <li><code>cipher = "0.4"</code></li>
+        <li><code>rand = "0.8"</code></li>
+      </ul>
+    </li>
+  </ul>
+</div>
+
+<h2>3. Building</h2>
+<div class="section">
+  <p>
+    After cloning or creating a new Rust project with the provided source code:
+  </p>
+<pre><code>$ cargo build --release
+</code></pre>
+  <p>
+    This will produce a binary (usually in <code>target/release/otp-osd</code>) that you can run directly.
+  </p>
+</div>
+
+<h2>4. Usage</h2>
+<div class="section">
+  <p>
+    To use <strong>otp-osd</strong>, you need a 32-byte (<strong>256-bit</strong>) master key 
+    in a file named <code>key.key</code>. Generate one with <code>openssl</code> or another 
+    secure random source:
+  </p>
+<pre><code>$ openssl rand -out key.key 32
+</code></pre>
+
+  <p>Now you can encrypt or decrypt files:</p>
+  <ul>
+    <li><code>./otp-osd encrypt input.bin output.bin</code></li>
+    <li><code>./otp-osd decrypt output.bin recovered.bin</code></li>
+  </ul>
+
+  <p>
+    Notice that <code>encrypt</code> prepends a random 12-byte nonce to the ciphertext in <code>output.bin</code>, 
+    so the file size will be increased by 12 bytes. The <code>decrypt</code> command automatically 
+    reads that nonce to re-initialize the ChaCha20 stream and recover the original data.
+  </p>
+
+  <p>
+    For <strong>in-place (atomic) overwrite</strong>, you can pass <code>-over</code> instead of an output filename:
+  </p>
+  <ul>
+    <li><code>./otp-osd encrypt -over somefile.bin</code> 
+        (encrypts <code>somefile.bin</code> in place, writing a temp file then renaming to prevent corruption)</li>
+    <li><code>./otp-osd decrypt -over encrypted.bin</code> 
+        (decrypts <code>encrypted.bin</code> in place)</li>
+  </ul>
+</div>
+
+<h2>5. Example Code</h2>
+<div class="section">
+  <p>
+    Below is the complete <strong>main.rs</strong> that implements <em>otp-osd</em>. 
+    You can name your binary crate <code>otp-osd</code> in <code>Cargo.toml</code>.
+  </p>
+<pre><code>use std::env;
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write};
+use std::path::Path;
+
+use chacha20::ChaCha20;
+use cipher::{KeyIvInit, StreamCipher};
+use cipher::generic_array::GenericArray;
+use rand::RngCore;
+
+fn main() -&gt; io::Result&lt;()&gt; {
+    let master_key_file = "key.key";
+
+    let args: Vec&lt;String&gt; = env::args().collect();
+    if args.len() &lt; 3 {
+        eprintln!("Usage:");
+        eprintln!("  {} encrypt &lt;input_file&gt; &lt;output_file&gt;", args[0]);
+        eprintln!("  {} decrypt &lt;input_file&gt; &lt;output_file&gt;", args[0]);
+        eprintln!("  {} encrypt -over &lt;input_file&gt;", args[0]);
+        eprintln!("  {} decrypt -over &lt;input_file&gt;", args[0]);
+        std::process::exit(1);
+    }
+
+    let command = args[1].as_str();
+    let (input_path, output_path, atomic_overwrite) = match args.len() {
+        4 if &amp;args[2] == "-over" =&gt; (args[3].clone(), args[3].clone(), true),
+        4 =&gt; (args[2].clone(), args[3].clone(), false),
+        _ =&gt; {
+            eprintln!("Incorrect arguments provided.");
+            std::process::exit(1);
+        }
+    };
+
+    let master_key = fs::read(master_key_file).map_err(|e| {
+        eprintln!("Error reading '{}': {}", master_key_file, e);
+        e
+    })?;
+    if master_key.len() != 32 {
+        eprintln!("Master key must be exactly 32 bytes. Found {}.", master_key.len());
+        std::process::exit(1);
+    }
+
+    let key_array = GenericArray::from_slice(&amp;master_key);
+
+    match command {
+        "encrypt" =&gt; {
+            let input_data = fs::read(&amp;input_path).map_err(|e| {
+                eprintln!("Error reading '{}': {}", input_path, e);
+                e
+            })?;
+
+            let mut nonce_bytes = [0u8; 12];
+            rand::thread_rng().fill_bytes(&amp;mut nonce_bytes);
+            let nonce_array = GenericArray::from_slice(&amp;nonce_bytes);
+
+            let mut cipher = ChaCha20::new(key_array, nonce_array);
+
+            let mut encrypted_data = input_data.clone();
+            cipher.apply_keystream(&amp;mut encrypted_data);
+
+            let mut final_output = Vec::with_capacity(nonce_bytes.len() + encrypted_data.len());
+            final_output.extend_from_slice(&amp;nonce_bytes);
+            final_output.extend_from_slice(&amp;encrypted_data);
+
+            if atomic_overwrite {
+                atomic_overwrite_file(&amp;input_path, &amp;final_output)?;
+            } else {
+                fs::write(&amp;output_path, &amp;final_output)?;
+            }
+            println!("Encrypted successfully.");
+        }
+
+        "decrypt" =&gt; {
+            let file_data = fs::read(&amp;input_path).map_err(|e| {
+                eprintln!("Error reading '{}': {}", input_path, e);
+                e
+            })?;
+
+            if file_data.len() &lt; 12 {
+                eprintln!("File too small; no room for 12-byte nonce.");
+                std::process::exit(1);
+            }
+
+            let nonce_part = &amp;file_data[0..12];
+            let ciphertext = &amp;file_data[12..];
+            let nonce_array = GenericArray::from_slice(nonce_part);
+
+            let mut cipher = ChaCha20::new(key_array, nonce_array);
+
+            let mut decrypted_data = ciphertext.to_vec();
+            cipher.apply_keystream(&amp;mut decrypted_data);
+
+            if atomic_overwrite {
+                atomic_overwrite_file(&amp;input_path, &amp;decrypted_data)?;
+            } else {
+                fs::write(&amp;output_path, &amp;decrypted_data)?;
+            }
+            println!("Decrypted successfully.");
+        }
+
+        _ =&gt; {
+            eprintln!("Unknown command '{}'. Use 'encrypt' or 'decrypt'.", command);
+            std::process::exit(1);
+        }
+    }
+
+    Ok(())
+}
+
+fn atomic_overwrite_file(original_path: &amp;str, data: &amp;[u8]) -&gt; io::Result&lt;()&gt; {
+    let input_file_path = Path::new(original_path);
+    let tmp_path = input_file_path.with_file_name(format!(
+        "{}.tmp",
+        input_file_path.file_name().unwrap().to_string_lossy()
+    ));
+
+    {
+        let mut tmp_file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&amp;tmp_path)?;
+        tmp_file.write_all(data)?;
+        tmp_file.flush()?;
+        tmp_file.sync_all()?;
+    }
+
+    fs::rename(&amp;tmp_path, &amp;input_file_path)?;
+    Ok(())
+}
+</code></pre>
+
+</div>
+
+<h2>6. Security Notes</h2>
+<div class="section">
+  <ul>
+    <li><strong>Master Key File</strong>: You must protect your <code>key.key</code> 
+      (32 bytes) from being stolen or leaked. Anyone with access to this key can decrypt 
+      your files.</li>
+    <li><strong>Nonce Reuse</strong>: Never allow two different encryptions to use the same 
+      (master key, nonce) pair. <code>otp-osd</code> automatically generates a random nonce 
+      for each encryption, so collisions are extremely unlikely. Just keep doing so, 
+      and do not reuse a ciphertext nonce manually.</li>
+    <li><strong>Integrity</strong>: This code <em>does not</em> include an authentication tag 
+      (like ChaCha20-Poly1305 would). That means an attacker could theoretically flip bits 
+      in your ciphertext undetected. If you need message integrity/authenticity, 
+      you should add an AEAD mode (e.g., <code>ChaCha20Poly1305</code>).</li>
+  </ul>
+</div>
+
+<h2>7. Why "One Step Down" from a True One-Time Pad?</h2>
+<div class="section">
+  <p>
+    A <em>true OTP</em> gives <strong>information-theoretic</strong> security if you have a 
+    key that’s at least as large as the message and is only used once. No computational 
+    limitation can break it.
+  </p>
+  <p>
+    This tool, <strong>otp-osd</strong>, instead uses <em>computationally secure</em> 
+    cryptography. If ChaCha20 remains unbroken, an attacker cannot feasibly decrypt your data 
+    without the key, even with large computing power. In practice, this is considered 
+    extremely secure and far more manageable than distributing giant, unique per-message keys.
+  </p>
+</div>
+
+<h2>8. License &amp; Disclaimer</h2>
+<div class="section">
+  <ul>
+    <li>Use this code at your own risk. While ChaCha20 is considered very secure, 
+        no warranty is given.</li>
+    <li>This is demonstration/example software, not a professionally audited security product.</li>
+  </ul>
+</div>
+
+</body>
+</html>
+
